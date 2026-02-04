@@ -1,0 +1,18 @@
+{
+  "appId": "com.arthasol.srivenkateswara", 
+  "appName": "Sri Venkateswara",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "backgroundColor": "#FFF7ED",
+      "androidScaleType": "CENTER_INSIDE",
+      "showSpinner": false,
+      "splashFullScreen": true,
+      "splashImmersive": true,
+      "launchShowDuration": 3000
+    }
+  }
+}
