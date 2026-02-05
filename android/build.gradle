@@ -1,26 +1,35 @@
-// Top-level build file where you can add configuration options common to all sub-projects/modules.
+// Top-level build file
 
 buildscript {
-    
     repositories {
         google()
         mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.13.0'
-        classpath 'com.google.gms:google-services:4.4.4'
-
-        // NOTE: Do not place your application dependencies here; they belong
-        // in the individual module build.gradle files
+        classpath 'com.android.tools.build:gradle:8.7.0'
+        classpath 'com.google.gms:google-services:4.4.1'
+		classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0"
     }
 }
 
-apply from: "variables.gradle"
+apply from: 'variables.gradle'
 
 allprojects {
     repositories {
         google()
         mavenCentral()
+    }
+
+    // ✅ THE FIX: Force libraries to stay on versions that support Android 35
+    // This prevents them from auto-updating to "Android 36" versions.
+    configurations.all {
+        resolutionStrategy {
+            force 'androidx.browser:browser:1.8.0'
+            force 'androidx.core:core:1.13.1'
+            force 'androidx.core:core-ktx:1.13.1'
+            force 'androidx.activity:activity:1.9.1'
+            force 'androidx.activity:activity-ktx:1.9.1'
+        }
     }
 }
 

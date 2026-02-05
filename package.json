@@ -10,7 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@capacitor-community/sqlite": "^7.0.3",
+    "@capacitor-community/sqlite": "^8.0.0",
     "@capacitor/android": "^8.0.2",
     "@capacitor/browser": "^8.0.0",
     "@capacitor/cli": "^8.0.1",

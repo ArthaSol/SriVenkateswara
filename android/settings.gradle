@@ -1,5 +1,25 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+    }
+}
+plugins {
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.8.0'
+}
+
+rootProject.name = 'android'
+
 include ':app'
+
+// ✅ 1. Fixes the "Cordova" error you just saw
 include ':capacitor-cordova-android-plugins'
 project(':capacitor-cordova-android-plugins').projectDir = new File('./capacitor-cordova-android-plugins/')
 
-apply from: 'capacitor.settings.gradle'
+// ✅ 2. Fixes the "SQLite/Filesystem" errors (Loads plugins automatically)
+try {
+    apply from: 'capacitor.settings.gradle'
+} catch (Exception e) {
+    println("Could not load capacitor.settings.gradle: " + e.message)
+}

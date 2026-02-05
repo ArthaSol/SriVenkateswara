@@ -1,4 +1,4 @@
-package com.temple.manager;
+package com.arthasol.srivenkateswara;
 
 import com.getcapacitor.BridgeActivity;
 
