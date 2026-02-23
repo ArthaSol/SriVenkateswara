@@ -5,7 +5,6 @@ let db = null;
 
 export const initDB = async () => {
   try {
-    // Create a connection
     const ret = await sqlite.checkConnectionsConsistency();
     const isConn = (await sqlite.isConnection("temple_db", false)).result;
     
@@ -17,10 +16,11 @@ export const initDB = async () => {
 
     await db.open();
 
-    // ⚠️ CRITICAL UPDATE: Added 'phone' column to the schema here
+    // ⚠️ ALIGNED SCHEMA: Added uuid, sync_status, and last_updated
     const schema = `
       CREATE TABLE IF NOT EXISTS donations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        uuid TEXT UNIQUE,
         date TEXT NOT NULL,
         donor_name TEXT NOT NULL,
         amount REAL NOT NULL,
@@ -28,21 +28,27 @@ export const initDB = async () => {
         denomination INTEGER,
         sl_no TEXT,
         receipt_no TEXT,
-        phone TEXT
+        phone TEXT,
+        sync_status TEXT DEFAULT 'pending',
+        last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
       );
     `;
 
     await db.execute(schema);
     
     // --- MIGRATION SAFETY CHECK ---
-    // If the user didn't uninstall, this adds the column manually to prevent crashes
-    try {
-      await db.execute("ALTER TABLE donations ADD COLUMN phone TEXT;");
-    } catch (e) {
-      // Ignore error if column already exists
+    const migrations = [
+      "ALTER TABLE donations ADD COLUMN phone TEXT;",
+      "ALTER TABLE donations ADD COLUMN uuid TEXT UNIQUE;",
+      "ALTER TABLE donations ADD COLUMN sync_status TEXT DEFAULT 'pending';",
+      "ALTER TABLE donations ADD COLUMN last_updated DATETIME DEFAULT CURRENT_TIMESTAMP;"
+    ];
+
+    for (let query of migrations) {
+        try { await db.execute(query); } catch (e) { /* Ignore if exists */ }
     }
 
-    console.log("Database Initialized with Phone Column");
+    console.log("Database Initialized: Ready for Supabase Cloud Sync");
 
   } catch (err) {
     console.error("DB Init Error:", err);
@@ -56,8 +62,8 @@ export const getDB = async () => {
 
 export const getAllDonations = async () => {
   const db = await getDB();
-  // We order by ID DESC so newest entries show first
-  const res = await db.query("SELECT * FROM donations ORDER BY id DESC");
+  // 👈 CHANGED: Sorts by Calendar Date first, then by newest inserted
+  const res = await db.query("SELECT * FROM donations ORDER BY date DESC, id DESC"); 
   return res.values || [];
 };
 

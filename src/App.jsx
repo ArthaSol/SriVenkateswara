@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
+import { v4 as uuidv4 } from 'uuid'; // 👈 ADDED UUID GENERATOR
 import { initDB, getDB, getAllDonations, deleteDonation } from './db/database';
+import { syncPendingDonations } from './db/syncService'; // 👈 ADDED CLOUD SYNC
 import { generatePDFData } from './pdfGenerator'; 
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
@@ -8,7 +10,7 @@ import { Haptics, ImpactStyle } from '@capacitor/haptics';
 import { Browser } from '@capacitor/browser'; 
 
 // --- APP VERSION CONTROL ---
-const APP_VERSION = "1.0.0"; // PATCH: Excel Export with Headers/Titles
+const APP_VERSION = "1.0.0"; 
 const UPDATE_CHECK_URL = "https://raw.githubusercontent.com/ArthaSol/SriVenkateswara/main/version.json";
 
 // --- CONSTANTS ---
@@ -454,10 +456,26 @@ function App() {
   const [isReportSheetOpen, setIsReportSheetOpen] = useState(false);
   const DENOMINATIONS = [100, 200, 500, 1000, 2000, 5000, 10000, 25000, 50000, 100000];
 
+  // 👈 PHASE 3: BACKGROUND CLOUD SYNC
   useEffect(() => {
-    const setup = async () => { try { await initDB(); refreshData(); } catch (e) { console.error("DB Error:", e); } };
+    const setup = async () => { 
+        try { 
+            await initDB(); 
+            refreshData(); 
+            syncPendingDonations(); // Push any offline saves immediately
+        } catch (e) { 
+            console.error("DB Error:", e); 
+        } 
+    };
     setup();
     checkForUpdates();
+
+    // Check for internet and sync silently every 60 seconds
+    const syncInterval = setInterval(() => {
+        syncPendingDonations();
+    }, 60000);
+
+    return () => clearInterval(syncInterval);
   }, []);
 
   const checkForUpdates = async () => {
@@ -504,6 +522,7 @@ function App() {
     triggerHaptic();
   };
 
+  // 👈 UPDATED: GENERATES UUID AND TRIGGERS CLOUD SYNC ON SAVE
   const handleSave = async (e) => {
     e.preventDefault();
     const db = await getDB();
@@ -511,15 +530,17 @@ function App() {
     const finalAmount = parseFloat(amount) || 0;
     
     if (formMode === 'EDIT') {
-      await db.run("UPDATE donations SET donor_name=?, amount=?, denomination=?, sl_no=?, receipt_no=?, date=?, phone=? WHERE id=?", [donor_name, finalAmount, denomination, sl_no, receipt_no, date, phone, id]);
+      await db.run("UPDATE donations SET donor_name=?, amount=?, denomination=?, sl_no=?, receipt_no=?, date=?, phone=?, sync_status='pending' WHERE id=?", [donor_name, finalAmount, denomination, sl_no, receipt_no, date, phone, id]);
       showToast('Receipt Updated!');
     } else {
-      await db.run("INSERT INTO donations (date, donor_name, amount, type, denomination, sl_no, receipt_no, phone) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [date, donor_name, finalAmount, 'CREDIT', denomination, sl_no, receipt_no, phone]);
+      const newUuid = uuidv4();
+      await db.run("INSERT INTO donations (uuid, date, donor_name, amount, type, denomination, sl_no, receipt_no, phone, sync_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')", [newUuid, date, donor_name, finalAmount, 'CREDIT', denomination, sl_no, receipt_no, phone]);
       showToast('Receipt Saved Successfully!');
     }
     triggerHaptic();
     setFormMode(null);
     refreshData();
+    syncPendingDonations(); // Push to Supabase instantly
   };
 
   const executeDelete = async () => {
@@ -552,7 +573,7 @@ function App() {
     } catch (error) { showToast(error.message, 'error'); }
   };
 
-  // --- UPDATED EXPORT LOGIC: Adds Title Rows ---
+  // 👈 PHASE 4: ADDS THE CLOUD UUID TO THE EXCEL BACKUP TO PREVENT DUPLICATES
   const handleExportBackup = async () => {
      try {
         const wb = XLSX.utils.book_new();
@@ -561,20 +582,23 @@ function App() {
         
         uniqueDenoms.forEach(denom => {
             const sheetRows = donations.filter(d => d.denomination == denom).map(d => ({
-                "Date": formatDateIN(d.date), "Sl No": d.sl_no, "Receipt No": d.receipt_no, "Name & Address": d.donor_name, "Amount": d.amount, "Phone": d.phone
+                "uuid": d.uuid, // THIS SAVES US FROM CLOUD DUPLICATES
+                "Date": formatDateIN(d.date), 
+                "Sl No": d.sl_no, 
+                "Receipt No": d.receipt_no, 
+                "Name & Address": d.donor_name, 
+                "Amount": d.amount, 
+                "Phone": d.phone
             }));
             
-            // 1. Create sheet starting at Row 4 (origin: A4)
             const ws = XLSX.utils.json_to_sheet(sheetRows, { origin: "A4" });
 
-            // 2. Add Title (Row 1) and Subtitle (Row 2)
             XLSX.utils.sheet_add_aoa(ws, [["SRI VENKATESWARA SWAMY TEMPLE"]], { origin: "A1" });
             XLSX.utils.sheet_add_aoa(ws, [[`Donation Account - ${denom}`]], { origin: "A2" });
 
-            // 3. Merge Cells (A1:F1 for main title, A2:F2 for subtitle)
             ws['!merges'] = [
-              { s: { r: 0, c: 0 }, e: { r: 0, c: 5 } }, // Row 1 Merge
-              { s: { r: 1, c: 0 }, e: { r: 1, c: 5 } }  // Row 2 Merge
+              { s: { r: 0, c: 0 }, e: { r: 0, c: 6 } }, // Expanded for UUID column
+              { s: { r: 1, c: 0 }, e: { r: 1, c: 6 } }
             ];
 
             XLSX.utils.book_append_sheet(wb, ws, String(denom));
@@ -589,6 +613,7 @@ function App() {
     } catch (error) { showToast("Export Failed", 'error'); }
   };
 
+  // 👈 UPDATED: READS UUID ON RESTORE TO PREVENT DUPLICATES
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -659,9 +684,14 @@ function App() {
                 if (finalAmount === 0 && sl) finalAmount = finalDenom;
                 if (!sl && finalAmount === 0) continue; 
 
+                // CLOUD INTELLIGENCE: If the excel sheet has a UUID, it's a restore -> 'synced'. If missing -> 'pending'
+                const importedUuid = getValue('uuid');
+                const finalUuid = importedUuid || uuidv4();
+                const syncStatus = importedUuid ? 'synced' : 'pending';
+
                 if (finalAmount > 0) {
-                   await db.run(`INSERT INTO donations (date, donor_name, amount, type, denomination, sl_no, receipt_no, phone) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, 
-                     [date, name, finalAmount, 'CREDIT', finalDenom, sl || 'Pending', rcpt, phone]);
+                   await db.run(`INSERT INTO donations (uuid, date, donor_name, amount, type, denomination, sl_no, receipt_no, phone, sync_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, 
+                     [finalUuid, date, name, finalAmount, 'CREDIT', finalDenom, sl || 'Pending', rcpt, phone, syncStatus]);
                    count++;
                 }
             }
@@ -673,6 +703,7 @@ function App() {
           } else {
              showToast(`Success! Imported ${count} receipts.`);
              refreshData();
+             syncPendingDonations();
           }
       } catch(err) { showToast("Import Error: " + err.message, 'error'); }
     };
