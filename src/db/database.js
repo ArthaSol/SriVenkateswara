@@ -71,3 +71,39 @@ export const deleteDonation = async (id) => {
   const db = await getDB();
   await db.run("DELETE FROM donations WHERE id = ?", [id]);
 };
+
+// NEW: Safely inserts cloud records, translating Supabase columns to SQLite columns
+export const insertCloudDonations = async (cloudRecords) => {
+  const db = await getDB();
+  let insertedCount = 0;
+  
+  // Safety net just in case a row is truly empty
+  const fallbackDate = new Date().toISOString().slice(0, 10);
+
+  for (const record of cloudRecords) {
+    // 1. Check if we already have this exact receipt locally
+    const check = await db.query("SELECT id FROM donations WHERE uuid = ?", [record.uuid]);
+    
+    // 2. Translate and Insert safely
+    if (!check.values || check.values.length === 0) {
+      await db.run(
+        `INSERT INTO donations (uuid, date, donor_name, amount, type, denomination, sl_no, receipt_no, phone, sync_status) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          record.uuid, 
+          record.donation_date || record.date || fallbackDate, // 👈 Catches Cloud 'donation_date'
+          record.narration || record.donor_name || "Unknown",  // 👈 Catches Cloud 'narration'
+          record.amount || 0, 
+          record.type || 'CREDIT',
+          record.book_type || record.denomination || record.amount || 0, // 👈 Catches Cloud 'book_type'
+          record.sl_no || "",                       
+          record.receipt_no || "", 
+          record.phone || "",                       
+          'synced' 
+        ]
+      );
+      insertedCount++;
+    }
+  }
+  return insertedCount; 
+};

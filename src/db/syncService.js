@@ -1,6 +1,7 @@
 // src/db/syncService.js
-import { getDB } from './database';
+import { getDB, insertCloudDonations } from './database';
 import { supabase } from './supabaseClient';
+
 
 export const syncPendingDonations = async () => {
   try {
@@ -46,5 +47,48 @@ export const syncPendingDonations = async () => {
 
   } catch (err) {
     console.error("Background Sync Error:", err);
+  }
+};
+
+// NEW: The 1-Click Cloud Recovery Engine (with pagination for large databases)
+export const restoreFromCloud = async () => {
+  if (!navigator.onLine) {
+    return { success: false, message: "No Internet. Please connect to Wi-Fi or Mobile Data." };
+  }
+
+  try {
+    let allCloudData = [];
+    let keepFetching = true;
+    let start = 0;
+    const step = 999; // Supabase safe limit per request
+
+    // Loop to grab every single record, no matter how large the database gets
+    while (keepFetching) {
+      const { data, error } = await supabase
+        .from('donations')
+        .select('*')
+        .range(start, start + step);
+
+      if (error) throw error;
+
+      if (data && data.length > 0) {
+        allCloudData = [...allCloudData, ...data];
+        start += step + 1;
+      } else {
+        keepFetching = false; // Reached the end of the cloud database
+      }
+    }
+
+    if (allCloudData.length === 0) {
+      return { success: true, count: 0, message: "Cloud database is currently empty." };
+    }
+
+    // Send the massive list to our safe local DB function
+    const insertedCount = await insertCloudDonations(allCloudData);
+    return { success: true, count: insertedCount, message: `Success! Restored ${insertedCount} missing records.` };
+
+  } catch (error) {
+    console.error("Cloud restore failed:", error);
+    return { success: false, message: error.message };
   }
 };

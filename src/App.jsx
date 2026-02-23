@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
-import { v4 as uuidv4 } from 'uuid'; // 👈 ADDED UUID GENERATOR
+import { v4 as uuidv4 } from 'uuid'; 
 import { initDB, getDB, getAllDonations, deleteDonation } from './db/database';
-import { syncPendingDonations } from './db/syncService'; // 👈 ADDED CLOUD SYNC
+// 👇 NEW: Added restoreFromCloud to the syncService import
+import { syncPendingDonations, restoreFromCloud } from './db/syncService'; 
 import { generatePDFData } from './pdfGenerator'; 
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
@@ -15,7 +16,7 @@ const UPDATE_CHECK_URL = "https://raw.githubusercontent.com/ArthaSol/SriVenkates
 
 // --- CONSTANTS ---
 const ITEM_HEIGHT = 180; 
-const OVERSCAN = 5;      
+const OVERSCAN = 5;       
 
 // --- THEME ENGINE ---
 const THEMES = {
@@ -96,7 +97,8 @@ const Icons = {
   Trash: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>,
   Plus: () => <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 4v16m8-8H4" /></svg>,
   Update: () => <svg className="w-12 h-12 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>,
-  Phone: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
+  Phone: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>,
+  DownloadCloud: () => <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" /></svg> // New Icon for Cloud
 };
 
 // ==========================================
@@ -454,6 +456,10 @@ function App() {
   const [formMode, setFormMode] = useState(null);
   const [formData, setFormData] = useState({ id: null, donor_name: '', denomination: '100', amount: '100', sl_no: '', receipt_no: '', date: '', phone: '' });
   const [isReportSheetOpen, setIsReportSheetOpen] = useState(false);
+  
+  // 👇 NEW: Added state for the cloud restore spinner
+  const [isRestoring, setIsRestoring] = useState(false);
+  
   const DENOMINATIONS = [100, 200, 500, 1000, 2000, 5000, 10000, 25000, 50000, 100000];
 
   // 👈 PHASE 3: BACKGROUND CLOUD SYNC
@@ -573,7 +579,43 @@ function App() {
     } catch (error) { showToast(error.message, 'error'); }
   };
 
-  // 👈 PHASE 4: ADDS THE CLOUD UUID TO THE EXCEL BACKUP TO PREVENT DUPLICATES
+  // 👇 NEW: Export Clean Excel (No UUID)
+  const handleShareableExcel = async () => {
+      try {
+        const wb = XLSX.utils.book_new();
+        const uniqueDenoms = [...new Set(donations.map(d => d.denomination))].sort((a, b) => a - b);
+        if (uniqueDenoms.length === 0) { showToast("No data to export!", 'error'); return; }
+        
+        uniqueDenoms.forEach(denom => {
+            const sheetRows = donations.filter(d => d.denomination == denom).map(d => ({
+                "Date": formatDateIN(d.date), 
+                "Sl No": d.sl_no, 
+                "Receipt No": d.receipt_no, 
+                "Name & Address": d.donor_name, 
+                "Amount": d.amount, 
+                "Phone": d.phone
+            }));
+            
+            const ws = XLSX.utils.json_to_sheet(sheetRows, { origin: "A4" });
+            XLSX.utils.sheet_add_aoa(ws, [["SRI VENKATESWARA SWAMY TEMPLE"]], { origin: "A1" });
+            XLSX.utils.sheet_add_aoa(ws, [[`Public Report - ${denom}`]], { origin: "A2" });
+            ws['!merges'] = [
+              { s: { r: 0, c: 0 }, e: { r: 0, c: 5 } }, 
+              { s: { r: 1, c: 0 }, e: { r: 1, c: 5 } }
+            ];
+            XLSX.utils.book_append_sheet(wb, ws, String(denom));
+        });
+
+        const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' });
+        const fileName = `Temple_Public_Report_${getTodayStr()}.xlsx`;
+        
+        const savedFile = await Filesystem.writeFile({ path: fileName, data: wbout, directory: Directory.Cache, recursive: true });
+        await Share.share({ title: 'Temple Public Report', url: savedFile.uri });
+        showToast('Clean Report Created!');
+    } catch (error) { showToast("Export Failed", 'error'); }
+  };
+
+  // 👈 PHASE 4: Admin Backup (Includes UUID)
   const handleExportBackup = async () => {
      try {
         const wb = XLSX.utils.book_new();
@@ -594,7 +636,7 @@ function App() {
             const ws = XLSX.utils.json_to_sheet(sheetRows, { origin: "A4" });
 
             XLSX.utils.sheet_add_aoa(ws, [["SRI VENKATESWARA SWAMY TEMPLE"]], { origin: "A1" });
-            XLSX.utils.sheet_add_aoa(ws, [[`Donation Account - ${denom}`]], { origin: "A2" });
+            XLSX.utils.sheet_add_aoa(ws, [[`System Admin Backup - ${denom}`]], { origin: "A2" });
 
             ws['!merges'] = [
               { s: { r: 0, c: 0 }, e: { r: 0, c: 6 } }, // Expanded for UUID column
@@ -605,12 +647,31 @@ function App() {
         });
 
         const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' });
-        const fileName = `Sri_Venkateswara_Swamy_Temple_Account_${getTodayStr()}.xlsx`;
+        const fileName = `Sri_Venkateswara_System_Backup_${getTodayStr()}.xlsx`;
         
         const savedFile = await Filesystem.writeFile({ path: fileName, data: wbout, directory: Directory.Cache, recursive: true });
-        await Share.share({ title: 'Temple Backup', url: savedFile.uri });
-        showToast('Backup Created!');
+        await Share.share({ title: 'System Backup', url: savedFile.uri });
+        showToast('System Backup Created!');
     } catch (error) { showToast("Export Failed", 'error'); }
+  };
+
+  // 👇 NEW: Trigger the Cloud Restore Engine
+  const handleCloudRestoreTrigger = async () => {
+    if (!window.confirm("Check cloud for missing records? This requires internet.")) return;
+    
+    setIsRestoring(true);
+    triggerHaptic();
+    const result = await restoreFromCloud();
+    setIsRestoring(false);
+    
+    if (result.success) {
+      showToast(result.message);
+      if (result.count > 0) {
+        refreshData(); // Refresh UI if new data came in
+      }
+    } else {
+      showToast(result.message, 'error');
+    }
   };
 
   // 👈 UPDATED: READS UUID ON RESTORE TO PREVENT DUPLICATES
@@ -713,6 +774,7 @@ function App() {
   const ReportsScreen = () => (
     <div className="flex flex-col gap-4 pb-32">
        <h2 className={`text-2xl font-bold ${currentTheme.textPrimary} px-2`}>Tools & Reports</h2>
+       
        <div onClick={() => setIsReportSheetOpen(true)} className={`${currentTheme.inputBg} p-6 rounded-2xl shadow-sm border ${currentTheme.border} flex items-center gap-4 active:scale-95 transition-transform`}>
           <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center text-2xl">📄</div>
           <div>
@@ -720,13 +782,25 @@ function App() {
              <p className={`text-xs ${currentTheme.textSecondary}`}>Generate printable list</p>
           </div>
        </div>
-       <div onClick={handleExportBackup} className={`${currentTheme.inputBg} p-6 rounded-2xl shadow-sm border ${currentTheme.border} flex items-center gap-4 active:scale-95 transition-transform`}>
-          <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center text-2xl">📊</div>
+
+       {/* 👇 NEW: Shareable Excel Button */}
+       <div onClick={handleShareableExcel} className={`${currentTheme.inputBg} p-6 rounded-2xl shadow-sm border ${currentTheme.border} flex items-center gap-4 active:scale-95 transition-transform`}>
+          <div className="w-12 h-12 bg-emerald-100 rounded-full flex items-center justify-center text-2xl">📊</div>
           <div>
-             <h3 className={`font-bold ${currentTheme.textPrimary}`}>Excel Backup</h3>
-             <p className={`text-xs ${currentTheme.textSecondary}`}>Multi-sheet export (Safe)</p>
+             <h3 className={`font-bold ${currentTheme.textPrimary}`}>Shareable Excel</h3>
+             <p className={`text-xs ${currentTheme.textSecondary}`}>Clean data for auditors</p>
           </div>
        </div>
+
+       {/* 👈 UPDATED: Admin Backup Button */}
+       <div onClick={handleExportBackup} className={`${currentTheme.inputBg} p-6 rounded-2xl shadow-sm border ${currentTheme.border} flex items-center gap-4 active:scale-95 transition-transform`}>
+          <div className="w-12 h-12 bg-gray-100 rounded-full flex items-center justify-center text-2xl">💾</div>
+          <div>
+             <h3 className={`font-bold ${currentTheme.textPrimary}`}>System Backup</h3>
+             <p className={`text-xs ${currentTheme.textSecondary}`}>Master file with UUIDs</p>
+          </div>
+       </div>
+
        <label className={`${currentTheme.inputBg} p-6 rounded-2xl shadow-sm border ${currentTheme.border} flex items-center gap-4 active:scale-95 transition-transform cursor-pointer`}>
           <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center text-2xl">📥</div>
           <div>
@@ -735,6 +809,19 @@ function App() {
           </div>
           <input type="file" accept=".xlsx" onChange={handleFileUpload} className="hidden" />
        </label>
+
+       {/* 👇 NEW: 1-Click Cloud Restore Button */}
+       <div onClick={handleCloudRestoreTrigger} className={`${currentTheme.inputBg} p-6 rounded-2xl shadow-sm border ${currentTheme.border} flex items-center gap-4 active:scale-95 transition-transform ${isRestoring ? 'opacity-50 pointer-events-none' : ''}`}>
+          <div className="w-12 h-12 bg-blue-50 rounded-full flex items-center justify-center">
+             <Icons.DownloadCloud />
+          </div>
+          <div>
+             <h3 className={`font-bold ${currentTheme.textPrimary}`}>
+               {isRestoring ? 'Downloading...' : 'Restore from Cloud'}
+             </h3>
+             <p className={`text-xs ${currentTheme.textSecondary}`}>Pull missing records safely</p>
+          </div>
+       </div>
     </div>
   );
 
